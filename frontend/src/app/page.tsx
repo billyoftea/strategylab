@@ -1,8 +1,9 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Send, Sparkles, ChevronRight, BarChart3, Code, RotateCcw } from 'lucide-react'
+import { Send, Sparkles, BarChart3, Code, RotateCcw } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
+import { parseStrategy, runBacktest } from '@/lib/api'
 
 // 类型定义
 interface Message {
@@ -33,17 +34,16 @@ interface BacktestResult {
   sharpe_ratio: number
   total_trades: number
   win_rate: number
+  equity_curve: { date: string; value: number; benchmark: number }[]
 }
 
-// 模拟数据
-const mockEquityData = [
-  { date: '2024-01', value: 100, benchmark: 100 },
-  { date: '2024-02', value: 105, benchmark: 102 },
-  { date: '2024-03', value: 103, benchmark: 101 },
-  { date: '2024-04', value: 108, benchmark: 104 },
-  { date: '2024-05', value: 112, benchmark: 103 },
-  { date: '2024-06', value: 115, benchmark: 106 },
-]
+interface Analysis {
+  summary: string
+  logic_analysis: string
+  market_fit: string
+  risks: { type: string; description: string; severity: string }[]
+  suggestions: { area: string; suggestion: string; expected_impact: string }[]
+}
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
@@ -57,7 +57,9 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false)
   const [currentStrategy, setCurrentStrategy] = useState<Strategy | null>(null)
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null)
+  const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [activeTab, setActiveTab] = useState<'chat' | 'preview' | 'result'>('chat')
+  const [currentParams, setCurrentParams] = useState<Record<string, any>>({})
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // 自动滚动
@@ -79,101 +81,150 @@ export default function Home() {
     setInput('')
     setIsLoading(true)
 
-    // 模拟API响应
-    setTimeout(() => {
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: '我理解了你的策略想法。为了更准确地回测，请确认以下参数：',
-        type: 'options',
-        options: [
+    try {
+      const response = await parseStrategy(input, currentParams)
+      
+      if (response.error) {
+        setMessages((prev) => [
+          ...prev,
           {
-            field: 'factor_name',
-            label: '因子类型',
-            values: [
-              { value: 'mom_20', label: '20日动量（短期）' },
-              { value: 'mom_60', label: '60日动量（中期）' },
-              { value: 'mom_120', label: '120日动量（长期）' },
-            ],
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: `抱歉，请求失败：${response.error}`,
           },
-          {
-            field: 'top_n',
-            label: '持仓数量',
-            values: [
-              { value: 30, label: '前30只' },
-              { value: 50, label: '前50只' },
-              { value: 100, label: '前100只' },
-            ],
-          },
-          {
-            field: 'rebalance_freq',
-            label: '调仓频率',
-            values: [
-              { value: 'weekly', label: '周频' },
-              { value: 'monthly', label: '月频' },
-            ],
-          },
-        ],
+        ])
+      } else if (response.data) {
+        const data = response.data
+        
+        if (data.status === 'clarifying') {
+          setCurrentParams(data.current_params || {})
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              role: 'assistant',
+              content: '我理解了你的策略想法。为了更准确地回测，请确认以下参数：',
+              type: 'options',
+              options: data.questions,
+            },
+          ])
+        } else if (data.status === 'confirmed' && data.strategy) {
+          setCurrentStrategy(data.strategy)
+          setCurrentParams(data.current_params || {})
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              role: 'assistant',
+              content: '策略已确认！你可以查看右侧的策略预览，或点击"开始回测"。',
+              type: 'strategy',
+              strategy: data.strategy,
+            },
+          ])
+          setActiveTab('preview')
+        }
       }
-      setMessages((prev) => [...prev, assistantMessage])
-      setIsLoading(false)
-    }, 1000)
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: '抱歉，发生了未知错误。',
+        },
+      ])
+    }
+    
+    setIsLoading(false)
   }
 
   // 选择选项
-  const handleSelectOption = (field: string, value: string | number) => {
-    const strategy: Strategy = {
-      name: '60日动量轮动策略',
-      params: {
-        factor_name: field === 'factor_name' ? value : 'mom_60',
-        top_n: field === 'top_n' ? value : 50,
-        rebalance_freq: field === 'rebalance_freq' ? value : 'monthly',
-      },
-      codePreview: `# 60日动量轮动策略
-factor_name = "mom_60"  # 60日动量
-top_n = 50  # 持仓数量
-rebalance_freq = "monthly"  # 调仓频率
-
-# 策略逻辑
-1. 按60日动量对所有股票排序
-2. 选取前50只股票
-3. 每月调仓一次
-4. 等权配置`,
+  const handleSelectOption = async (field: string, value: string | number) => {
+    const newParams = { ...currentParams, [field]: value }
+    setCurrentParams(newParams)
+    
+    // 继续解析，检查是否还有缺失参数
+    setIsLoading(true)
+    
+    try {
+      const response = await parseStrategy('确认参数', newParams)
+      
+      if (response.data) {
+        const data = response.data
+        
+        if (data.status === 'clarifying') {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              role: 'assistant',
+              content: '请继续确认以下参数：',
+              type: 'options',
+              options: data.questions,
+            },
+          ])
+        } else if (data.status === 'confirmed' && data.strategy) {
+          setCurrentStrategy(data.strategy)
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              role: 'assistant',
+              content: '策略已确认！你可以查看右侧的策略预览，或点击"开始回测"。',
+              type: 'strategy',
+              strategy: data.strategy,
+            },
+          ])
+          setActiveTab('preview')
+        }
+      }
+    } catch (error) {
+      console.error(error)
     }
-
-    setCurrentStrategy(strategy)
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: Date.now().toString(),
-        role: 'assistant',
-        content: '策略已确认！你可以查看右侧的策略预览，或点击"开始回测"。',
-        type: 'strategy',
-        strategy,
-      },
-    ])
-    setActiveTab('preview')
+    
+    setIsLoading(false)
   }
 
   // 运行回测
-  const handleBacktest = () => {
+  const handleBacktest = async () => {
+    if (!currentStrategy) return
+    
     setIsLoading(true)
-    setTimeout(() => {
-      setBacktestResult({
-        total_return: 0.25,
-        annual_return: 0.15,
-        max_drawdown: 0.18,
-        sharpe_ratio: 1.2,
-        total_trades: 120,
-        win_rate: 0.58,
-      })
-      setIsLoading(false)
-      setActiveTab('result')
-    }, 2000)
+    
+    try {
+      const response = await runBacktest(currentStrategy.params)
+      
+      if (response.error) {
+        alert(`回测失败：${response.error}`)
+      } else if (response.data) {
+        const data = response.data
+        
+        if (data.status === 'success') {
+          setBacktestResult(data.result)
+          setAnalysis(data.analysis)
+          setActiveTab('result')
+        } else if (data.error) {
+          alert(`回测失败：${data.error}`)
+        }
+      }
+    } catch (error) {
+      alert('回测发生错误')
+    }
+    
+    setIsLoading(false)
   }
 
   // 格式化百分比
   const formatPct = (v: number) => `${(v * 100).toFixed(1)}%`
+
+  // 获取风险等级颜色
+  const getSeverityColor = (severity: string) => {
+    switch (severity) {
+      case 'high': return 'text-danger'
+      case 'medium': return 'text-warning'
+      default: return 'text-text-secondary'
+    }
+  }
 
   return (
     <div className="flex h-screen bg-background">
@@ -318,7 +369,7 @@ rebalance_freq = "monthly"  # 调仓频率
           <>
             <div className="px-6 py-4 border-b border-border">
               <h2 className="font-semibold text-text-primary flex items-center gap-2">
-                <Code className="w-4 h-4" /
+                <Code className="w-4 h-4" />
                 策略预览
               </h2>
             </div>
@@ -338,7 +389,7 @@ rebalance_freq = "monthly"  # 调仓频率
 
                 <div className="bg-surface rounded-xl p-4 border border-border">
                   <h3 className="text-sm font-medium text-text-secondary mb-3">代码预览</h3>
-                  <pre className="text-xs font-mono text-text-primary overflow-x-auto">
+                  <pre className="text-xs font-mono text-text-primary overflow-x-auto whitespace-pre-wrap">
                     {currentStrategy.codePreview}
                   </pre>
                 </div>
@@ -351,14 +402,14 @@ rebalance_freq = "monthly"  # 调仓频率
           <>
             <div className="px-6 py-4 border-b border-border flex items-center justify-between">
               <h2 className="font-semibold text-text-primary flex items-center gap-2">
-                <BarChart3 className="w-4 h-4" /
+                <BarChart3 className="w-4 h-4" />
                 回测结果
               </h2>
               <button
                 onClick={() => setActiveTab('chat')}
                 className="text-xs text-text-secondary hover:text-text-primary flex items-center gap-1"
               >
-                <RotateCcw className="w-3 h-3" /
+                <RotateCcw className="w-3 h-3" />
                 重新测试
               </button>
             </div>
@@ -386,44 +437,46 @@ rebalance_freq = "monthly"  # 调仓频率
               </div>
 
               {/* 收益曲线 */}
-              <div className="bg-surface rounded-xl p-4 border border-border">
-                <h3 className="text-sm font-medium text-text-secondary mb-4">收益曲线</h3>
-                <div className="h-48">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={mockEquityData}>
-                      <defs>
-                        <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                          <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#2d2d40" />
-                      <XAxis dataKey="date" stroke="#64748b" fontSize={10} />
-                      <YAxis stroke="#64748b" fontSize={10} />
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: '#1e1e2e',
-                          border: '1px solid #2d2d40',
-                          borderRadius: '8px',
-                        }}
-                      />
-                      <Area
-                        type="monotone"
-                        dataKey="value"
-                        stroke="#3b82f6"
-                        fillOpacity={1}
-                        fill="url(#colorValue)"
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="benchmark"
-                        stroke="#64748b"
-                        strokeDasharray="5 5"
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
+              {backtestResult.equity_curve && backtestResult.equity_curve.length > 0 && (
+                <div className="bg-surface rounded-xl p-4 border border-border">
+                  <h3 className="text-sm font-medium text-text-secondary mb-4">收益曲线</h3>
+                  <div className="h-48">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={backtestResult.equity_curve}>
+                        <defs>
+                          <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#2d2d40" />
+                        <XAxis dataKey="date" stroke="#64748b" fontSize={10} />
+                        <YAxis stroke="#64748b" fontSize={10} />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: '#1e1e2e',
+                            border: '1px solid #2d2d40',
+                            borderRadius: '8px',
+                          }}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="value"
+                          stroke="#3b82f6"
+                          fillOpacity={1}
+                          fill="url(#colorValue)"
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="benchmark"
+                          stroke="#64748b"
+                          strokeDasharray="5 5"
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* 交易统计 */}
               <div className="bg-surface rounded-xl p-4 border border-border">
@@ -445,34 +498,50 @@ rebalance_freq = "monthly"  # 调仓频率
               </div>
 
               {/* 策略分析 */}
-              <div className="bg-surface rounded-xl p-4 border border-border">
-                <h3 className="text-sm font-medium text-text-secondary mb-4">策略分析</h3>
-                <div className="space-y-4 text-sm">
-                  <div>
-                    <h4 className="text-text-primary font-medium mb-2">📊 策略表现总结</h4>
-                    <p className="text-text-secondary leading-relaxed">
-                      策略采用60日动量因子进行选股，回测期内年化收益15%，跑赢基准。
-                      夏普比率1.2，风险调整后收益良好。最大回撤18%，在可接受范围内。
-                    </p>
-                  </div>
-                  <div>
-                    <h4 className="text-text-primary font-medium mb-2">⚠️ 潜在风险点</h4>
-                    <ul className="text-text-secondary space-y-1 list-disc list-inside">
-                      <li>动量策略在风格切换时可能面临较大回撤</li>
-                      <li>月频调仓可能错过短期动量变化</li>
-                      <li>等权配置未考虑个股流动性差异</li>
-                    </ul>
-                  </div>
-                  <div>
-                    <h4 className="text-text-primary font-medium mb-2">💡 改进建议</h4>
-                    <ul className="text-text-secondary space-y-1 list-disc list-inside">
-                      <li>考虑加入市场趋势过滤器，避免熊市满仓</li>
-                      <li>测试不同调仓频率对收益的影响</li>
-                      <li>加入波动率加权，降低高波动股票权重</li>
-                    </ul>
+              {analysis && (
+                <div className="bg-surface rounded-xl p-4 border border-border">
+                  <h3 className="text-sm font-medium text-text-secondary mb-4">策略分析</h3>
+                  <div className="space-y-4 text-sm">
+                    <div>
+                      <h4 className="text-text-primary font-medium mb-2">📊 策略表现总结</h4>
+                      <p className="text-text-secondary leading-relaxed">{analysis.summary}</p>
+                    </div>
+                    
+                    <div>
+                      <h4 className="text-text-primary font-medium mb-2">🔍 逻辑分析</h4>
+                      <p className="text-text-secondary leading-relaxed">{analysis.logic_analysis}</p>
+                    </div>
+                    
+                    <div>
+                      <h4 className="text-text-primary font-medium mb-2">📈 市场适配</h4>
+                      <p className="text-text-secondary leading-relaxed">{analysis.market_fit}</p>
+                    </div>
+                    
+                    <div>
+                      <h4 className="text-text-primary font-medium mb-2">⚠️ 潜在风险点</h4>
+                      <ul className="text-text-secondary space-y-1 list-disc list-inside">
+                        {analysis.risks.map((risk, i) => (
+                          <li key={i} className={getSeverityColor(risk.severity)}>
+                            {risk.type}: {risk.description}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    
+                    <div>
+                      <h4 className="text-text-primary font-medium mb-2">💡 改进建议</h4>
+                      <ul className="text-text-secondary space-y-2 list-disc list-inside">
+                        {analysis.suggestions.map((s, i) => (
+                          <li key={i}>
+                            <span className="font-medium">{s.area}:</span> {s.suggestion}
+                            <span className="text-text-muted text-xs block ml-4">预期效果: {s.expected_impact}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           </>
         )}
@@ -482,7 +551,7 @@ rebalance_freq = "monthly"  # 调仓频率
             <div className="text-center">
               <Sparkles className="w-12 h-12 text-text-muted mx-auto mb-4" />
               <p className="text-text-secondary">在左侧描述你的策略想法</p>
-              <p className="text-text-muted text-sm mt-2">例如："我想做一个60日动量轮动策略"</p>
+              <p className="text-text-muted text-sm mt-2">例如：&quot;我想做一个60日动量轮动策略&quot;</p>
             </div>
           </div>
         )}

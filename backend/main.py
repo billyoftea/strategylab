@@ -1,5 +1,5 @@
 """
-FastAPI 主应用
+简化版FastAPI - 先实现数据获取
 """
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,15 +7,10 @@ from pydantic import BaseModel
 from typing import List, Dict, Optional, Any
 import os
 import sys
+import json
 
 # 添加src到路径
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
-
-from data.manager import DataManager
-from factors.calculator import FactorCalculator
-from backtest.engine import BacktestEngine
-from analysis.analyzer import LLMAnalyzer
-
 
 app = FastAPI(
     title="StrategyLab API",
@@ -26,18 +21,11 @@ app = FastAPI(
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境需要限制
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# 初始化组件
-data_manager = DataManager()
-factor_calculator = FactorCalculator(data_manager)
-backtest_engine = BacktestEngine(data_manager, factor_calculator)
-analyzer = LLMAnalyzer()
-
 
 # ========== 数据模型 ==========
 
@@ -48,7 +36,7 @@ class StrategyParseRequest(BaseModel):
 
 
 class StrategyParseResponse(BaseModel):
-    status: str  # "clarifying" | "confirmed"
+    status: str
     questions: Optional[List[Dict]] = None
     current_params: Optional[Dict] = None
     strategy: Optional[Dict] = None
@@ -74,6 +62,19 @@ class FactorInfo(BaseModel):
     category: str
 
 
+# ========== 模拟数据 ==========
+
+FACTORS = [
+    {"name": "mom_20", "desc": "20日动量", "category": "动量"},
+    {"name": "mom_60", "desc": "60日动量", "category": "动量"},
+    {"name": "mom_120", "desc": "120日动量", "category": "动量"},
+    {"name": "rsi_14", "desc": "14日RSI", "category": "动量"},
+    {"name": "volatility_20", "desc": "20日波动率", "category": "波动"},
+    {"name": "atr_14", "desc": "14日ATR", "category": "波动"},
+    {"name": "turnover", "desc": "换手率", "category": "量价"},
+    {"name": "volume_ratio", "desc": "量比", "category": "量价"},
+]
+
 # ========== API 路由 ==========
 
 @app.get("/")
@@ -84,20 +85,12 @@ async def root():
 @app.get("/api/factors", response_model=List[FactorInfo])
 async def get_factors():
     """获取可用因子列表"""
-    return factor_calculator.get_factor_list()
+    return FACTORS
 
 
 @app.post("/api/strategy/parse", response_model=StrategyParseResponse)
 async def parse_strategy(request: StrategyParseRequest):
-    """
-    解析用户输入的策略描述
-    
-    - 如果是初次输入，返回需要澄清的问题
-    - 如果信息完整，返回确认的策略结构
-    """
-    # TODO: 集成LLM进行自然语言解析
-    # 目前使用简单的规则匹配
-    
+    """解析用户输入的策略描述"""
     message = request.message.lower()
     current_params = request.current_params or {}
     
@@ -111,14 +104,13 @@ async def parse_strategy(request: StrategyParseRequest):
         elif "120" in message or "长期" in message:
             current_params["factor_name"] = "mom_120"
         else:
-            current_params["factor_name"] = "mom_60"  # 默认
+            current_params["factor_name"] = "mom_60"
     
     # 提取持仓数量
-    if "前" in message and "只" in message:
-        import re
-        match = re.search(r'前(\d+)只', message)
-        if match:
-            current_params["top_n"] = int(match.group(1))
+    import re
+    match = re.search(r'(\d+)只', message)
+    if match:
+        current_params["top_n"] = int(match.group(1))
     
     # 提取调仓频率
     if "日频" in message or "每天" in message:
@@ -133,7 +125,6 @@ async def parse_strategy(request: StrategyParseRequest):
     missing_fields = [f for f in required_fields if f not in current_params]
     
     if missing_fields:
-        # 生成澄清问题
         questions = []
         if "factor_name" in missing_fields:
             questions.append({
@@ -209,47 +200,56 @@ rebalance_freq = "{freq}"  # 调仓频率
 
 @app.post("/api/backtest/run", response_model=BacktestResponse)
 async def run_backtest(request: BacktestRequest):
-    """
-    执行回测并返回结果和分析
-    """
+    """执行回测并返回结果和分析"""
     try:
-        # 执行回测
-        result = backtest_engine.run_backtest(
-            strategy_params=request.strategy_params,
-            start_date=request.start_date,
-            end_date=request.end_date,
-            initial_capital=request.initial_capital
-        )
+        # 模拟回测结果
+        import random
+        random.seed(42)
         
-        # 转换为字典
-        result_dict = {
-            "total_return": result.total_return,
-            "annual_return": result.annual_return,
-            "max_drawdown": result.max_drawdown,
-            "max_drawdown_duration": result.max_drawdown_duration,
-            "volatility": result.volatility,
-            "sharpe_ratio": result.sharpe_ratio,
-            "total_trades": result.total_trades,
-            "win_rate": result.win_rate,
-            "profit_factor": result.profit_factor,
-            "avg_holding_days": result.avg_holding_days,
-            "equity_curve": result.equity_curve,
-            "trades": result.trades[:20] if result.trades else [],  # 限制数量
-            "monthly_returns": result.monthly_returns,
-            "benchmark_return": result.benchmark_return,
-            "alpha": result.alpha,
-            "beta": result.beta,
+        result = {
+            "total_return": 0.25,
+            "annual_return": 0.15,
+            "max_drawdown": 0.18,
+            "max_drawdown_duration": 45,
+            "volatility": 0.22,
+            "sharpe_ratio": 1.2,
+            "total_trades": 120,
+            "win_rate": 0.58,
+            "profit_factor": 1.4,
+            "avg_holding_days": 15,
+            "equity_curve": [
+                {"date": "2024-01", "value": 100, "benchmark": 100},
+                {"date": "2024-02", "value": 105, "benchmark": 102},
+                {"date": "2024-03", "value": 103, "benchmark": 101},
+                {"date": "2024-04", "value": 108, "benchmark": 104},
+                {"date": "2024-05", "value": 112, "benchmark": 103},
+                {"date": "2024-06", "value": 115, "benchmark": 106},
+            ],
+            "trades": [],
+            "monthly_returns": {},
+            "benchmark_return": 0.06,
+            "alpha": 0.09,
+            "beta": 0.85,
         }
         
-        # 深度分析
-        analysis = analyzer.analyze_strategy(
-            strategy_params=request.strategy_params,
-            backtest_result=result_dict
-        )
+        # 模拟分析
+        analysis = {
+            "summary": f"策略采用{request.strategy_params.get('factor_name', 'mom_60')}进行选股，回测期内年化收益15%，跑赢基准。",
+            "logic_analysis": "策略逻辑自洽，动量因子与定期调仓匹配。",
+            "market_fit": "当前市场环境适合趋势跟踪策略。",
+            "risks": [
+                {"type": "回撤风险", "description": "最大回撤18%，需评估承受能力", "severity": "medium"},
+                {"type": "风格切换", "description": "动量策略在风格切换时可能失效", "severity": "high"},
+            ],
+            "suggestions": [
+                {"area": "风控优化", "suggestion": "添加止损规则", "expected_impact": "降低回撤"},
+                {"area": "频率优化", "suggestion": "测试周频vs月频", "expected_impact": "平衡成本与收益"},
+            ]
+        }
         
         return BacktestResponse(
             status="success",
-            result=result_dict,
+            result=result,
             analysis=analysis
         )
         
@@ -258,25 +258,6 @@ async def run_backtest(request: BacktestRequest):
             status="error",
             error=str(e)
         )
-
-
-@app.get("/api/data/status")
-async def get_data_status():
-    """获取数据更新状态"""
-    return data_manager.get_update_status()
-
-
-@app.post("/api/data/update")
-async def update_data():
-    """触发数据更新（仅管理员）"""
-    # TODO: 添加权限检查
-    try:
-        data_manager.update_stock_list()
-        # 异步更新价格数据
-        # TODO: 使用后台任务
-        return {"status": "updating", "message": "数据更新已启动"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ========== 启动 ==========
