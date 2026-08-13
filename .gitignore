@@ -1,0 +1,19 @@
+# Data (regenerable via fetch_data.py)
+data/
+# Outputs (regenerable)
+reports/
+*.png
+*.csv
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+# Secrets
+.env
+*.key
+secrets.*
+# OS
+.DS_Store
+Thumbs.db
