@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "strategylab"
+version = "0.1.0"
+description = "Factor / K-line pattern backtest lab on RD-Agent + Qlib"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pyqlib",
+    "lightgbm",
+    "pandas",
+    "numpy",
+    "matplotlib",
+    "typer",
+    "openai",
+    "jinja2",
+    "pyarrow",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+strategylab = "strategylab.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["strategylab*"]
